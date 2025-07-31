@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import CryptoJS from "crypto-js";
 import {
   getFirestore,
   collection,
@@ -13,34 +12,76 @@ import { app } from "../firebase";
 
 const db = getFirestore(app);
 
-// Shared secret key for AES encryption (for demo)
-const SHARED_KEY = "my_super_secret_key_123!";
-
-// Encryption helper functions
-export function encryptMessage(message, key = SHARED_KEY) {
-  const encrypted = CryptoJS.AES.encrypt(message, key).toString();
-  console.log("Encrypting message:", message, "->", encrypted);
-  return encrypted;
+// Generate a public/private key pair (RSA-OAEP)
+export async function generateKeyPair() {
+  return await window.crypto.subtle.generateKey(
+    {
+      name: "RSA-OAEP",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["encrypt", "decrypt"]
+  );
 }
 
-export function decryptMessage(ciphertext, key = SHARED_KEY) {
-  try {
-    const bytes = CryptoJS.AES.decrypt(ciphertext, key);
-    const decrypted = bytes.toString(CryptoJS.enc.Utf8);
-    console.log("Decrypting message:", ciphertext, "->", decrypted);
-    return decrypted;
-  } catch (e) {
-    console.error("Decryption failed for:", ciphertext, e);
-    return "[Decryption failed]";
-  }
+// Export a public key to a string (for sharing)
+export async function exportPublicKey(key) {
+  const spki = await window.crypto.subtle.exportKey("spki", key);
+  return btoa(String.fromCharCode(...new Uint8Array(spki)));
 }
 
-function ChatWindow({
-  user,
-  selectedUser,
-  encrypt = encryptMessage,
-  decrypt = decryptMessage,
-}) {
+// Import a public key from a string
+export async function importPublicKey(str) {
+  const binary = Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
+  return await window.crypto.subtle.importKey(
+    "spki",
+    binary,
+    {
+      name: "RSA-OAEP",
+      hash: "SHA-256",
+    },
+    true,
+    ["encrypt"]
+  );
+}
+
+// Encrypt a message with a public key
+export async function encryptWithPublicKey(message, publicKey) {
+  const enc = new TextEncoder();
+  const encrypted = await window.crypto.subtle.encrypt(
+    { name: "RSA-OAEP" },
+    publicKey,
+    enc.encode(message)
+  );
+  return btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+}
+
+// Decrypt a message with a private key
+export async function decryptWithPrivateKey(ciphertext, privateKey) {
+  const binary = Uint8Array.from(atob(ciphertext), (c) => c.charCodeAt(0));
+  const decrypted = await window.crypto.subtle.decrypt(
+    { name: "RSA-OAEP" },
+    privateKey,
+    binary
+  );
+  return new TextDecoder().decode(decrypted);
+}
+
+// --- End Asymmetric Encryption Helpers ---
+
+function ChatWindow({ user, selectedUser }) {
+  // Demo: Generate and log public/private key pair on mount
+  useEffect(() => {
+    async function logKeys() {
+      const { publicKey, privateKey } = await generateKeyPair();
+      const exportedPub = await exportPublicKey(publicKey);
+      console.log("Public Key (base64):", exportedPub);
+      console.log("Private Key (CryptoKey object):", privateKey);
+    }
+    logKeys();
+  }, []);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
 
@@ -71,13 +112,11 @@ function ChatWindow({
       user.uid < selectedUser.uid
         ? `${user.uid}_${selectedUser.uid}`
         : `${selectedUser.uid}_${user.uid}`;
-    const encrypted = encrypt(newMessage);
-    console.log("Sending encrypted message:", encrypted);
     await addDoc(collection(db, "chats", chatId, "messages"), {
       uid: user.uid,
       photoURL: user.photoURL,
       displayName: user.displayName,
-      message: encrypted,
+      message: newMessage,
       timestamp: serverTimestamp(),
     });
     setNewMessage("");
@@ -93,7 +132,7 @@ function ChatWindow({
           <div className="message-item" key={message.id}>
             <img src={message.data.photoURL} alt={message.data.displayName} />
             <div className="message-content">
-              <p>{decrypt(message.data.message)}</p>
+              <p>{message.data.message}</p>
             </div>
           </div>
         ))}
